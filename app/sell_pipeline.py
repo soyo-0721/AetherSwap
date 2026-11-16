@@ -19,7 +19,7 @@ from app.steam_confirm import auto_confirm_once
 from app.steam_listings import fetch_my_listings
 from steam.market import list_item, parse_sell_response
 from steam.market_orders import compute_smart_list_price, get_sell_orders_cny
-from steam.request_policy import MarketCooldown
+from steam.request_policy import steam_market_cooldown
 from steam.session import create_market_session
 from utils.delay import jittered_sleep
 from utils.money import USD_TO_CNY_DEFAULT, list_price_display_to_cents
@@ -27,7 +27,7 @@ from utils.time import parse_steam_history_date
 from utils.trend import calculate_trend_robust
 
 _sell_phase_lock = threading.Lock()
-_listing_cooldown = MarketCooldown()
+_listing_cooldown = steam_market_cooldown
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -488,7 +488,12 @@ def _listing_response_is_success(out: object, data: dict, message: str) -> bool:
 def _listing_rate_limited(ctx: PipelineContext, out: object) -> bool:
     if not isinstance(out, dict) or out.get("status_code") != 429:
         return False
-    remaining = _listing_cooldown.defer(out.get("retry_after"))
+    # The Steam session records this response centrally. Preserve a fallback
+    # for legacy callers and tests that provide a plain response dictionary.
+    if out.get("rate_limit_recorded"):
+        remaining = _listing_cooldown.remaining()
+    else:
+        remaining = _listing_cooldown.defer(out.get("retry_after"))
     preview = _listing_response_body_preview(out.get("text"))
     ctx.log(
         f"[出售] 上架接口 HTTP 429; body={preview}，冷却约 {remaining:.0f}s，"

@@ -1,16 +1,21 @@
-"""Process-local cooldowns for Steam market endpoints, without credential state."""
+"""Process-wide Steam Community rate-limit coordination.
 
+A 429 from any Steam Community endpoint must stop market reads and writes from
+other parts of the application as well.
+"""
 import math
 import threading
 import time
+from contextlib import contextmanager
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
-import requests
 
+import requests
 
 DEFAULT_RATE_LIMIT_SECONDS = 60.0
 MAX_CONSECUTIVE_MARKET_429 = 3
+DEFAULT_STEAM_REQUEST_INTERVAL_SECONDS = 0.5
 
 
 class SteamMarketRateLimitExceeded(RuntimeError):
@@ -77,7 +82,7 @@ class MarketCooldown:
             self._failures = 0
 
 
-# A limited market request must also stop fallback endpoints and history reads.
+# One cooldown covers all Steam Community API paths, including write endpoints.
 steam_market_cooldown = MarketCooldown()
 
 
@@ -85,3 +90,54 @@ def check_steam_market_cooldown() -> None:
     remaining = steam_market_cooldown.remaining()
     if remaining > 0:
         raise SteamMarketCooldownActive(remaining)
+
+
+def record_steam_market_response(response, *, cooldown: Optional[MarketCooldown] = None) -> Optional[float]:
+    """Record a 429 once, even if both the transport and caller inspect it."""
+    target = cooldown or steam_market_cooldown
+    status_code = getattr(response, "status_code", None)
+    if status_code == 429:
+        if bool(getattr(response, "steam_rate_limit_recorded", False)):
+            return target.remaining()
+        headers = getattr(response, "headers", {}) or {}
+        remaining = target.defer(headers.get("Retry-After"))
+        try:
+            response.steam_rate_limit_recorded = True
+        except Exception:
+            pass
+        return remaining
+    if status_code == 200:
+        target.record_success()
+    return None
+
+
+class SteamRequestGate:
+    """Serialize Steam Community calls and keep a small gap between requests."""
+
+    def __init__(
+        self,
+        min_interval: float = DEFAULT_STEAM_REQUEST_INTERVAL_SECONDS,
+        clock: Optional[Callable[[], float]] = None,
+        sleeper: Optional[Callable[[float], None]] = None,
+    ):
+        self._min_interval = max(0.0, float(min_interval))
+        self._clock = clock or time.monotonic
+        self._sleep = sleeper or time.sleep
+        self._lock = threading.RLock()
+        self._next_request_at = 0.0
+
+    @contextmanager
+    def slot(self, *, check_cooldown: bool = True):
+        with self._lock:
+            wait = self._next_request_at - self._clock()
+            if wait > 0:
+                self._sleep(wait)
+            if check_cooldown:
+                check_steam_market_cooldown()
+            try:
+                yield
+            finally:
+                self._next_request_at = self._clock() + self._min_interval
+
+
+steam_request_gate = SteamRequestGate()

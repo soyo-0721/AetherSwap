@@ -4,6 +4,7 @@ import math
 import time
 from typing import Optional
 from urllib.parse import unquote, urlparse
+from steam.request_policy import record_steam_market_response, steam_request_gate
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -76,23 +77,13 @@ class _MarketReadAdapter(requests.adapters.HTTPAdapter):
 
 
 class _SteamSession(requests.Session):
-    """Apply the app's proxy policy to callers without their own routing loop."""
+    """Route Steam traffic and coordinate every Steam Community request."""
 
     def __init__(self, *, allow_auth_during_cooldown=False):
         super().__init__()
         self._allow_auth_during_cooldown = allow_auth_during_cooldown
 
-    def request(self, method, url, **kwargs):
-        parsed = urlparse(url)
-        is_auth_check = (
-            self._allow_auth_during_cooldown
-            and method.upper() == "GET"
-            and parsed.path.rstrip("/") == "/my/profile"
-        )
-        if parsed.hostname == "steamcommunity.com" and not is_auth_check:
-            from steam.request_policy import check_steam_market_cooldown
-
-            check_steam_market_cooldown()
+    def _request_with_proxy(self, method, url, **kwargs):
         # Market order-book callers already select proxies and own their retries.
         if "proxies" in kwargs:
             return super().request(method, url, **kwargs)
@@ -118,6 +109,22 @@ class _SteamSession(requests.Session):
             kwargs["proxies"] = dict(fallback)
             return super().request(method, url, **kwargs)
 
+    def request(self, method, url, **kwargs):
+        parsed = urlparse(url)
+        if parsed.hostname != "steamcommunity.com":
+            return self._request_with_proxy(method, url, **kwargs)
+
+        is_auth_check = (
+            self._allow_auth_during_cooldown
+            and method.upper() == "GET"
+            and parsed.path.rstrip("/") == "/my/profile"
+        )
+        # Explicit auth verification may run during cooldown, but it still uses
+        # the same request gate and any 429 response is recorded globally.
+        with steam_request_gate.slot(check_cooldown=not is_auth_check):
+            response = self._request_with_proxy(method, url, **kwargs)
+            record_steam_market_response(response)
+            return response
 
 def create_steam_session(*, verify: bool = False, allow_auth_during_cooldown: bool = False) -> requests.Session:
     session = _SteamSession(allow_auth_during_cooldown=allow_auth_during_cooldown)

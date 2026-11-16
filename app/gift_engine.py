@@ -6,8 +6,13 @@ import time
 import requests
 import urllib3
 from bs4 import BeautifulSoup
-from steam.session import parse_cookies
-from steam.request_policy import SteamMarketCooldownActive, check_steam_market_cooldown, steam_market_cooldown
+from steam.session import create_steam_session, parse_cookies
+from steam.request_policy import (
+    SteamMarketCooldownActive,
+    check_steam_market_cooldown,
+    record_steam_market_response,
+    steam_market_cooldown,
+)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 def _build_cookies(cookies_raw: str) -> dict:
@@ -197,17 +202,16 @@ def get_wallet_balance(cookies_raw: str) -> dict:
     proxies = pm.get_proxies_for_request()
     unknown_currency_id = None
     try:
-        resp = requests.get(
-            "https://steamcommunity.com/market/",
-            cookies=cookies,
-            headers={**_HEADERS, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
-            proxies=proxies,
-            verify=False,
-            timeout=15,
-        )
-        if resp.status_code == 429:
-            steam_market_cooldown.defer(resp.headers.get("Retry-After"))
-            check_steam_market_cooldown()
+        with create_steam_session(verify=False) as session:
+            session.cookies.update(cookies)
+            request_kwargs = {
+                "headers": {**_HEADERS, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+                "timeout": 15,
+            }
+            if proxies is not None:
+                request_kwargs["proxies"] = proxies
+            resp = session.get("https://steamcommunity.com/market/", **request_kwargs)
+        record_steam_market_response(resp, cooldown=steam_market_cooldown)
         m = re.search(r'g_rgWalletInfo\s*=\s*(\{[^;]+\})', resp.text)
         if m:
             wallet = json.loads(m.group(1))

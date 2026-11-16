@@ -47,6 +47,7 @@ def list_item(
             "status_code": r.status_code,
             "text": r.text,
             "retry_after": r.headers.get("Retry-After"),
+            "rate_limit_recorded": bool(getattr(r, "steam_rate_limit_recorded", False)),
         }
     except Exception:
         return None

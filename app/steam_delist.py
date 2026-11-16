@@ -5,6 +5,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import requests
 from config import get_steam
 from steam.session import create_market_session
+from steam.request_policy import (
+    SteamMarketCooldownActive,
+    record_steam_market_response,
+    steam_market_cooldown,
+)
 from utils.delay import jittered_sleep
 try:
     import urllib3
@@ -29,12 +34,25 @@ def _cookies_to_dict(cookies) -> dict:
             k, _, v = s.partition("=")
             out[k.strip()] = v.strip()
     return out
+def _raise_if_rate_limited(response) -> None:
+    if getattr(response, "status_code", None) == 429:
+        remaining = record_steam_market_response(
+            response, cooldown=steam_market_cooldown
+        )
+        raise SteamMarketCooldownActive(
+            remaining or steam_market_cooldown.remaining() or 60.0
+        )
+
+
 def _get_mylistings_api(session) -> Optional[Dict[str, Dict[str, Any]]]:
     params = {"norender": "1", "start": "0", "count": "100"}
     try:
         r = session.get(MYLISTINGS_API_URL, params=params, verify=False, timeout=TIMEOUT)
+    except SteamMarketCooldownActive:
+        raise
     except Exception:
         return None
+    _raise_if_rate_limited(r)
     if r.status_code != 200:
         return None
     try:
@@ -153,6 +171,7 @@ def _get_assetids_by_class_instance(
             if last_assetid:
                 params["start_assetid"] = last_assetid
             r = session.get(url, params=params, verify=False, timeout=20)
+            _raise_if_rate_limited(r)
             if r.status_code != 200:
                 return None
             try:
@@ -177,6 +196,8 @@ def _get_assetids_by_class_instance(
             if not last_assetid:
                 break
             jittered_sleep(0.5)
+    except SteamMarketCooldownActive:
+        raise
     except Exception:
         return None
     return result
@@ -205,11 +226,13 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         "Origin": "https://steamcommunity.com",
         "Referer": "https://steamcommunity.com/market/",
     }
+    session = None
     try:
-        session = requests.Session()
-        session.headers.update(headers)
-        session.cookies.update(c)
-        session.verify = False
+        # Use the same Steam transport as listing/history requests. A raw
+        # requests.Session bypasses shared cooldown, proxy routing and pacing.
+        session = create_market_session(
+            cookies_str, steam_id, headers=headers, verify=False
+        )
         asset_info = _get_mylistings_api(session)
         listing_id = None
         classid, instanceid = None, None
@@ -223,6 +246,7 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             contextid = info.get("contextid", "2")
         if not sessionid:
             r = session.get(MARKET_URL, timeout=TIMEOUT)
+            _raise_if_rate_limited(r)
             if r.status_code == 200:
                 sessionid_match = SESSIONID_PATTERN.search(r.text or "")
                 if sessionid_match:
@@ -231,6 +255,7 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                 return False, None, "未能在 Cookie 或市场页找到 sessionid"
         if not listing_id:
                 r = session.get(MARKET_URL, timeout=TIMEOUT)
+                _raise_if_rate_limited(r)
                 if r.status_code != 200:
                     return False, None, f"获取市场页失败 HTTP {r.status_code}"
                 html = r.text or ""
@@ -248,18 +273,19 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                 contextid = info.get("contextid", "2")
             if not classid:
                 r = session.get(MARKET_URL, timeout=TIMEOUT)
+                _raise_if_rate_limited(r)
                 html = (r.text or "") if r.status_code == 200 else ""
                 ci = _get_asset_class_instance_from_market_page(html, assetid) if html else None
                 if ci:
                     classid, instanceid = ci
             if not classid and name:
                 from steam.inventory import CS2_APP_ID, CS2_CONTEXT_MAIN
-                sess = create_market_session(cookies_str, steam_id)
                 try:
-                    inv_r = sess.get(
+                    inv_r = session.get(
                         f"https://steamcommunity.com/inventory/{steam_id}/{CS2_APP_ID}/{CS2_CONTEXT_MAIN}",
                         params={"l": "english", "count": 5000}, timeout=20
                     )
+                    _raise_if_rate_limited(inv_r)
                     if inv_r.status_code == 200:
                         inv = inv_r.json()
                         if inv.get("success") == 1:
@@ -277,6 +303,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                                 if name_lower and mhn and name_lower in mhn.lower():
                                     classid, instanceid = cid, iid
                                     break
+                except SteamMarketCooldownActive:
+                    raise
                 except Exception:
                     pass
         if not listing_id:
@@ -296,6 +324,7 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         }
         resp = session.post(remove_url, data={"sessionid": sessionid}, headers=post_headers, timeout=TIMEOUT)
+        _raise_if_rate_limited(resp)
         if resp.status_code != 200:
             return False, None, f"下架请求失败 HTTP {resp.status_code}"
         response_text = (resp.text or "").strip()
@@ -351,5 +380,10 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                 log_fn("下架成功但库存中未检测到新 assetid，已清空本地 assetid，请使用「同步售出/持有」补全", "warn")
             return True, None, None
         return False, None, f"下架后新 assetid 数量异常: {len(new_ids)} (期望 1)"
+    except SteamMarketCooldownActive as e:
+        return False, None, str(e)[:150]
     except Exception as e:
         return False, None, str(e)[:150]
+    finally:
+        if session is not None:
+            session.close()

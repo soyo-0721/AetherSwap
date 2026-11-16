@@ -10,7 +10,12 @@ STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_RETRIES = 2
 STEAM_REQUEST_RETRY_DELAY = 3
 from utils.proxy_manager import get_proxy_manager
-from steam.request_policy import check_steam_market_cooldown, steam_market_cooldown
+from steam.request_policy import (
+    check_steam_market_cooldown,
+    record_steam_market_response,
+    steam_market_cooldown,
+)
+from steam.session import create_steam_session
 try:
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -23,28 +28,33 @@ RETRY_STATUS_CODES = (502, 503, 504)
 def _get_with_retry(url: str, params: dict, headers: dict, cookies: dict, debug_fn: Optional[Callable[[str], None]]) -> requests.Response:
     last_err = None
     pm = get_proxy_manager()
-    for attempt in range(STEAM_REQUEST_RETRIES + 1):
-        check_steam_market_cooldown()
-        try:
-            proxies = pm.get_proxies_for_request(failed=(attempt > 0))
-            if proxies:
-                _debug(debug_fn, f"[Steam 请求] 正在使用代理池 {proxies.get('http')} 访问: {url}")
-            r = requests.get(url, params=params, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=STEAM_REQUEST_TIMEOUT)
-            if r.status_code == 429:
-                steam_market_cooldown.defer(r.headers.get("Retry-After"))
+    with create_steam_session(verify=False) as session:
+        session.cookies.update(cookies or {})
+        for attempt in range(STEAM_REQUEST_RETRIES + 1):
+            check_steam_market_cooldown()
+            try:
+                proxies = pm.get_proxies_for_request(failed=(attempt > 0))
+                if proxies:
+                    _debug(debug_fn, f"[Steam 请求] 正在使用代理池 {proxies.get('http')} 访问: {url}")
+                r = session.get(
+                    url, params=params, headers=headers, proxies=proxies,
+                    timeout=STEAM_REQUEST_TIMEOUT,
+                )
+                if r.status_code == 429:
+                    record_steam_market_response(r, cooldown=steam_market_cooldown)
+                    return r
+                if r.status_code in RETRY_STATUS_CODES and attempt < STEAM_REQUEST_RETRIES:
+                    _debug(debug_fn, f"[Steam 请求] HTTP {r.status_code}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
+                    time.sleep(STEAM_REQUEST_RETRY_DELAY)
+                    continue
                 return r
-            if r.status_code in RETRY_STATUS_CODES and attempt < STEAM_REQUEST_RETRIES:
-                _debug(debug_fn, f"[Steam 请求] HTTP {r.status_code}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
-                time.sleep(STEAM_REQUEST_RETRY_DELAY)
-                continue
-            return r
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ProxyError) as e:
-            last_err = e
-            if attempt < STEAM_REQUEST_RETRIES:
-                _debug(debug_fn, f"[Steam 请求] {type(e).__name__}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
-                time.sleep(STEAM_REQUEST_RETRY_DELAY)
-            else:
-                raise
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ProxyError) as e:
+                last_err = e
+                if attempt < STEAM_REQUEST_RETRIES:
+                    _debug(debug_fn, f"[Steam 请求] {type(e).__name__}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
+                    time.sleep(STEAM_REQUEST_RETRY_DELAY)
+                else:
+                    raise
     if last_err:
         raise last_err
     return None
