@@ -9,6 +9,7 @@ import requests
 from app import gift_engine, state, steam_listings
 from app.routes import inventory
 from steam import request_policy
+from steam import session as steam_session
 from steam.session import create_steam_session
 
 
@@ -101,27 +102,29 @@ def test_real_cookie_verification_works_during_market_cooldown(monkeypatch, cool
 
 
 def test_listings_request_does_not_send_during_cooldown(monkeypatch, cooling):
-    get = Mock()
-    monkeypatch.setattr(steam_listings.requests, "get", get)
+    monkeypatch.setattr(steam_session, "curl_requests", None)
+    send = Mock()
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
 
     try:
         steam_listings._get_with_retry(steam_listings.MYLISTINGS_URL, {}, {}, {}, None)
     except requests.RequestException:
         pass
 
-    get.assert_not_called()
+    send.assert_not_called()
 
 
 def test_wallet_request_does_not_send_during_cooldown(monkeypatch, cooling):
-    get = Mock()
-    monkeypatch.setattr(gift_engine.requests, "get", get)
+    monkeypatch.setattr(steam_session, "curl_requests", None)
+    send = Mock()
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
 
     try:
         gift_engine.get_wallet_balance("sessionid=test")
     except Exception:
         pass
 
-    get.assert_not_called()
+    send.assert_not_called()
 
 
 def test_other_services_are_not_blocked_by_steam_cooldown(monkeypatch, cooling):
@@ -139,13 +142,14 @@ def test_other_services_are_not_blocked_by_steam_cooldown(monkeypatch, cooling):
 
 def test_wallet_429_does_not_fall_back_to_other_endpoints(monkeypatch, cooling):
     cooling.now[0] += 121
+    monkeypatch.setattr(steam_session, "curl_requests", None)
     reply = requests.Response()
     reply.status_code = 429
     reply._content = b"null"
-    get = Mock(return_value=reply)
-    monkeypatch.setattr(gift_engine.requests, "get", get)
+    send = Mock(return_value=reply)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
 
     with pytest.raises(requests.RequestException, match="429"):
         gift_engine.get_wallet_balance("sessionid=test")
 
-    get.assert_called_once()
+    send.assert_called_once()

@@ -9,6 +9,8 @@ import requests
 
 from app import inventory_cs2
 from app.services import steam_auth
+from steam import request_policy, session as steam_session
+from steam.request_policy import MarketCooldown, SteamRequestGate
 from steam.session import create_market_session
 from utils import proxy_manager
 
@@ -25,6 +27,10 @@ def policy(monkeypatch):
         should_use_proxy_on_failure=lambda: False,
     )
     monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: manager)
+    # Keep a response-level 429 in one test from cooling down the other tests.
+    monkeypatch.setattr(request_policy, "steam_market_cooldown", MarketCooldown())
+    monkeypatch.setattr(steam_session, "steam_request_gate", SteamRequestGate(min_interval=0))
+    monkeypatch.setattr(steam_session, "curl_requests", None)
     monkeypatch.setattr(inventory_cs2, "get_steam", lambda: {"steam_id": STEAM_ID, "cookies": COOKIES})
     return manager
 
