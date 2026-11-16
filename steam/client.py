@@ -339,7 +339,6 @@ def resolve_market_hash_name_from_listing_url(
             kwargs.pop("verify", None)
             resp = client.get(request_url, **kwargs)
         if resp.status_code == 429:
-            retry_after = (getattr(resp, "headers", {}) or {}).get("Retry-After")
             remaining = record_steam_market_rate_limit(resp)
             raise SteamListingResolutionError(
                 "rate_limited", status_code=429,
