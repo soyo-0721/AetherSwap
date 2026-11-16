@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from steam.client import build_listing_url, _extract_ssr_render_context
-from steam.request_policy import steam_market_cooldown
+from steam.request_policy import record_steam_market_rate_limit, steam_market_cooldown
 from utils.delay import jittered_sleep
 from utils.proxy_manager import get_proxy_manager
 from utils.money import USD_TO_CNY_DEFAULT
@@ -35,7 +35,7 @@ def _market_cooldown_error() -> Optional[str]:
 
 def _record_market_rate_limit(response) -> Optional[str]:
     if response.status_code == 429:
-        _market_cooldown.defer((getattr(response, "headers", {}) or {}).get("Retry-After"))
+        record_steam_market_rate_limit(response, cooldown=_market_cooldown)
         return _market_cooldown_error()
     if response.status_code == 200:
         _market_cooldown.record_success()

@@ -129,7 +129,9 @@ class SteamClient:
                 from app.state import log
                 log(f"[SteamClient] 历史数据请求失败 (attempt={attempt+1}/{steam_retry_attempts}): {exc}", "warn", category="steam")
                 if exc.status_code == 429:
-                    remaining = _history_cooldown.defer(exc.retry_after_header)
+                    remaining = _history_cooldown.remaining()
+                    if not exc.rate_limit_recorded:
+                        remaining = _history_cooldown.defer(exc.retry_after_header)
                     log(f"[SteamClient] 历史接口 HTTP 429，暂停请求约 {remaining:.0f}s，不切换代理重试", "warn", category="steam")
                     return None
                 if not exc.retryable:

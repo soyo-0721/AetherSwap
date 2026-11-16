@@ -5,6 +5,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import requests
 from config import get_steam
 from steam.session import create_market_session
+from steam.request_policy import (
+    SteamMarketCooldownActive,
+    check_steam_market_cooldown,
+    record_steam_market_rate_limit,
+)
 from utils.delay import jittered_sleep
 try:
     import urllib3
@@ -182,6 +187,11 @@ def _get_assetids_by_class_instance(
     return result
 def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], None]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
     try:
+        check_steam_market_cooldown()
+    except SteamMarketCooldownActive as exc:
+        return False, None, str(exc)
+
+    try:
         cred = get_steam()
     except Exception as exc:
         return False, None, f"读取 Steam 配置失败: {type(exc).__name__}"
@@ -205,11 +215,9 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         "Origin": "https://steamcommunity.com",
         "Referer": "https://steamcommunity.com/market/",
     }
+    session = None
     try:
-        session = requests.Session()
-        session.headers.update(headers)
-        session.cookies.update(c)
-        session.verify = False
+        session = create_market_session(cookies_str, steam_id, headers=headers)
         asset_info = _get_mylistings_api(session)
         listing_id = None
         classid, instanceid = None, None
@@ -254,9 +262,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                     classid, instanceid = ci
             if not classid and name:
                 from steam.inventory import CS2_APP_ID, CS2_CONTEXT_MAIN
-                sess = create_market_session(cookies_str, steam_id)
                 try:
-                    inv_r = sess.get(
+                    inv_r = session.get(
                         f"https://steamcommunity.com/inventory/{steam_id}/{CS2_APP_ID}/{CS2_CONTEXT_MAIN}",
                         params={"l": "english", "count": 5000}, timeout=20
                     )
@@ -277,6 +284,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                                 if name_lower and mhn and name_lower in mhn.lower():
                                     classid, instanceid = cid, iid
                                     break
+                except SteamMarketCooldownActive:
+                    raise
                 except Exception:
                     pass
         if not listing_id:
@@ -296,6 +305,14 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         }
         resp = session.post(remove_url, data={"sessionid": sessionid}, headers=post_headers, timeout=TIMEOUT)
+        if resp.status_code == 429:
+            remaining = record_steam_market_rate_limit(resp)
+            return (
+                False,
+                None,
+                f"下架请求失败 HTTP 429，Steam 市场冷却约 {remaining:.0f}s；"
+                "本次没有自动重试，避免重复提交下架操作",
+            )
         if resp.status_code != 200:
             return False, None, f"下架请求失败 HTTP {resp.status_code}"
         response_text = (resp.text or "").strip()
@@ -351,5 +368,13 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                 log_fn("下架成功但库存中未检测到新 assetid，已清空本地 assetid，请使用「同步售出/持有」补全", "warn")
             return True, None, None
         return False, None, f"下架后新 assetid 数量异常: {len(new_ids)} (期望 1)"
+    except SteamMarketCooldownActive as exc:
+        return False, None, str(exc)
     except Exception as e:
         return False, None, str(e)[:150]
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass

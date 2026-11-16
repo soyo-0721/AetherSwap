@@ -10,7 +10,11 @@ STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_RETRIES = 2
 STEAM_REQUEST_RETRY_DELAY = 3
 from utils.proxy_manager import get_proxy_manager
-from steam.request_policy import check_steam_market_cooldown, steam_market_cooldown
+from steam.request_policy import (
+    check_steam_market_cooldown,
+    record_steam_market_rate_limit,
+    steam_market_cooldown,
+)
 try:
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -31,7 +35,7 @@ def _get_with_retry(url: str, params: dict, headers: dict, cookies: dict, debug_
                 _debug(debug_fn, f"[Steam 请求] 正在使用代理池 {proxies.get('http')} 访问: {url}")
             r = requests.get(url, params=params, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=STEAM_REQUEST_TIMEOUT)
             if r.status_code == 429:
-                steam_market_cooldown.defer(r.headers.get("Retry-After"))
+                record_steam_market_rate_limit(r)
                 return r
             if r.status_code in RETRY_STATUS_CODES and attempt < STEAM_REQUEST_RETRIES:
                 _debug(debug_fn, f"[Steam 请求] HTTP {r.status_code}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")

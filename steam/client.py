@@ -10,6 +10,7 @@ from .request_policy import (
     SteamMarketCooldownActive,
     check_steam_market_cooldown,
     parse_retry_after,
+    record_steam_market_rate_limit,
     steam_market_cooldown,
 )
 from .session import create_steam_session, get_market
@@ -339,7 +340,7 @@ def resolve_market_hash_name_from_listing_url(
             resp = client.get(request_url, **kwargs)
         if resp.status_code == 429:
             retry_after = (getattr(resp, "headers", {}) or {}).get("Retry-After")
-            remaining = steam_market_cooldown.defer(retry_after)
+            remaining = record_steam_market_rate_limit(resp)
             raise SteamListingResolutionError(
                 "rate_limited", status_code=429,
                 retry_after=remaining,
@@ -391,6 +392,9 @@ class SteamHistoryError(Exception):
         self.status_code = response.status_code if response is not None else None
         self.retry_after = None
         self.retry_after_header = None
+        self.rate_limit_recorded = bool(
+            getattr(response, "steam_market_rate_limit_recorded", False)
+        ) if response is not None else False
         self.retryable = self.status_code is None or self.status_code == 408 or (
             self.status_code is not None and self.status_code >= 500
         )

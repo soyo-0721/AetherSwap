@@ -19,7 +19,11 @@ from app.steam_confirm import auto_confirm_once
 from app.steam_listings import fetch_my_listings
 from steam.market import list_item, parse_sell_response
 from steam.market_orders import compute_smart_list_price, get_sell_orders_cny
-from steam.request_policy import MarketCooldown
+from steam.request_policy import (
+    SteamMarketCooldownActive,
+    record_steam_market_rate_limit,
+    steam_market_cooldown,
+)
 from steam.session import create_market_session
 from utils.delay import jittered_sleep
 from utils.money import USD_TO_CNY_DEFAULT, list_price_display_to_cents
@@ -27,7 +31,7 @@ from utils.time import parse_steam_history_date
 from utils.trend import calculate_trend_robust
 
 _sell_phase_lock = threading.Lock()
-_listing_cooldown = MarketCooldown()
+_listing_cooldown = steam_market_cooldown
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -488,7 +492,7 @@ def _listing_response_is_success(out: object, data: dict, message: str) -> bool:
 def _listing_rate_limited(ctx: PipelineContext, out: object) -> bool:
     if not isinstance(out, dict) or out.get("status_code") != 429:
         return False
-    remaining = _listing_cooldown.defer(out.get("retry_after"))
+    remaining = record_steam_market_rate_limit(out, cooldown=_listing_cooldown)
     preview = _listing_response_body_preview(out.get("text"))
     ctx.log(
         f"[出售] 上架接口 HTTP 429; body={preview}，冷却约 {remaining:.0f}s，"
@@ -518,6 +522,15 @@ def _submit_listings(
         if ctx.is_stop_requested():
             ctx.set_status("stopped", "已停止")
             return listed
+        remaining = _listing_cooldown.remaining()
+        if remaining > 0:
+            ctx.log(
+                f"[出售] Steam 市场 HTTP 429 冷却中，约 {remaining:.0f}s 后停止本批次；"
+                "剩余物品未提交",
+                "warn",
+                category="steam",
+            )
+            break
 
         it = entry["it"]
         list_price = entry["list_price"]
@@ -587,6 +600,14 @@ def _submit_listings(
                 else type(out).__name__
             )
             ctx.log(f"[出售] 上架失败 assetid={aid} {name}: {msg or response_preview}", "warn", category="steam")
+        except SteamMarketCooldownActive as ex:
+            remaining = _listing_cooldown.remaining()
+            ctx.log(
+                f"[出售] Steam 市场冷却中，本次上架请求未发送；约 {remaining:.0f}s 后可重试: {ex}",
+                "warn",
+                category="steam",
+            )
+            break
         except Exception as ex:
             error_detail = _listing_response_body_preview(ex)
             ctx.log(f"[出售] 上架时发生未捕获异常 assetid={aid} {name}: {type(ex).__name__} - {error_detail}", "error", category="steam")

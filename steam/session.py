@@ -82,6 +82,15 @@ class _SteamSession(requests.Session):
         super().__init__()
         self._allow_auth_during_cooldown = allow_auth_during_cooldown
 
+    def _request_and_record_rate_limit(self, method, url, **kwargs):
+        response = super().request(method, url, **kwargs)
+        parsed = urlparse(url)
+        if parsed.hostname in {"steamcommunity.com", "www.steamcommunity.com"}:
+            from steam.request_policy import record_steam_market_rate_limit
+
+            record_steam_market_rate_limit(response)
+        return response
+
     def request(self, method, url, **kwargs):
         parsed = urlparse(url)
         is_auth_check = (
@@ -89,13 +98,13 @@ class _SteamSession(requests.Session):
             and method.upper() == "GET"
             and parsed.path.rstrip("/") == "/my/profile"
         )
-        if parsed.hostname == "steamcommunity.com" and not is_auth_check:
+        if parsed.hostname in {"steamcommunity.com", "www.steamcommunity.com"} and not is_auth_check:
             from steam.request_policy import check_steam_market_cooldown
 
             check_steam_market_cooldown()
         # Market order-book callers already select proxies and own their retries.
         if "proxies" in kwargs:
-            return super().request(method, url, **kwargs)
+            return self._request_and_record_rate_limit(method, url, **kwargs)
 
         from utils.proxy_manager import get_proxy_manager
 
@@ -107,7 +116,7 @@ class _SteamSession(requests.Session):
             # Pass per request so environment proxies cannot override this choice.
             kwargs["proxies"] = dict(proxies)
         try:
-            return super().request(method, url, **kwargs)
+            return self._request_and_record_rate_limit(method, url, **kwargs)
         except (requests.ConnectionError, requests.Timeout):
             # A failed write may have reached Steam. Never replay it implicitly.
             if method.upper() not in ("GET", "HEAD") or not manager.should_use_proxy_on_failure():
@@ -116,7 +125,7 @@ class _SteamSession(requests.Session):
             if not fallback or fallback == proxies:
                 raise
             kwargs["proxies"] = dict(fallback)
-            return super().request(method, url, **kwargs)
+            return self._request_and_record_rate_limit(method, url, **kwargs)
 
 
 def create_steam_session(*, verify: bool = False, allow_auth_during_cooldown: bool = False) -> requests.Session:

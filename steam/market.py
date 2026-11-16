@@ -1,5 +1,6 @@
 import json
 from typing import Optional, Union
+from steam.request_policy import SteamMarketCooldownActive
 SELL_ITEM_URL = "https://steamcommunity.com/market/sellitem/"
 
 
@@ -47,7 +48,12 @@ def list_item(
             "status_code": r.status_code,
             "text": r.text,
             "retry_after": r.headers.get("Retry-After"),
+            "steam_market_rate_limit_recorded": bool(
+                getattr(r, "steam_market_rate_limit_recorded", False)
+            ),
         }
+    except SteamMarketCooldownActive:
+        raise
     except Exception:
         return None
 def list_item_by_name(

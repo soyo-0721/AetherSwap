@@ -85,3 +85,47 @@ def check_steam_market_cooldown() -> None:
     remaining = steam_market_cooldown.remaining()
     if remaining > 0:
         raise SteamMarketCooldownActive(remaining)
+
+
+_RATE_LIMIT_RECORDED_KEY = "steam_market_rate_limit_recorded"
+
+
+def record_steam_market_rate_limit(response, *, cooldown=None) -> float:
+    """Register one HTTP 429 against the shared cooldown exactly once.
+
+    The marker is attached to the response object (or response dictionary) so
+    callers at higher layers can reuse the result without incrementing the
+    exponential backoff a second time.
+    """
+    target = cooldown or steam_market_cooldown
+    if isinstance(response, dict):
+        status_code = response.get("status_code")
+        already_recorded = bool(response.get(_RATE_LIMIT_RECORDED_KEY))
+        retry_after = response.get("retry_after")
+        headers = response.get("headers") or {}
+    else:
+        status_code = getattr(response, "status_code", None)
+        already_recorded = bool(getattr(response, _RATE_LIMIT_RECORDED_KEY, False))
+        headers = getattr(response, "headers", {}) or {}
+        retry_after = headers.get("Retry-After") if hasattr(headers, "get") else None
+
+    if status_code != 429:
+        return 0.0
+    if already_recorded:
+        return target.remaining()
+    if retry_after in (None, "") and hasattr(headers, "get"):
+        retry_after = headers.get("Retry-After")
+
+    remaining = target.defer(retry_after)
+    try:
+        if isinstance(response, dict):
+            response[_RATE_LIMIT_RECORDED_KEY] = True
+            response["steam_market_cooldown_remaining"] = remaining
+        else:
+            setattr(response, _RATE_LIMIT_RECORDED_KEY, True)
+            setattr(response, "steam_market_cooldown_remaining", remaining)
+    except Exception:
+        # The cooldown is already active even if a third-party response object
+        # does not permit custom attributes.
+        pass
+    return remaining
