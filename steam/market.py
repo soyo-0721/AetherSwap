@@ -42,7 +42,16 @@ def list_item(
         "price": str(int(price) if isinstance(price, float) and price == int(price) else price),
     }
     try:
-        r = session.post(SELL_ITEM_URL, data=payload, timeout=15)
+        request_headers = {
+            "Origin": "https://steamcommunity.com",
+            # The browser listing XHR does not send X-Requested-With.
+            "X-Requested-With": None,
+        }
+        session_headers = getattr(session, "headers", {})
+        referer = session_headers.get("Referer") if hasattr(session_headers, "get") else None
+        if isinstance(referer, str) and referer:
+            request_headers["Referer"] = referer
+        r = session.post(SELL_ITEM_URL, data=payload, headers=request_headers, timeout=15)
         return {
             "status_code": r.status_code,
             "text": r.text,

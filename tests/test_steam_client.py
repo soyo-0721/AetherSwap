@@ -33,6 +33,23 @@ def _ssr_html(queries):
     return f"window.SSR.renderContext=JSON.parse({json.dumps(json.dumps(ctx, ensure_ascii=False))});"
 
 
+def _curl_session_transport(curl_get):
+    """Adapt the older GET-only test stub to the Session-based transport."""
+    from types import SimpleNamespace
+
+    class FakeCurlSession:
+        def __init__(self, **_options):
+            self.cookies = SimpleNamespace(clear=lambda: None)
+
+        def request(self, method, url, **kwargs):
+            return curl_get(url, **kwargs)
+
+        def close(self):
+            pass
+
+    return SimpleNamespace(Session=FakeCurlSession)
+
+
 def _description(name, tags):
     return {
         "queryKey": ["market", "description", 730, name],
@@ -333,7 +350,7 @@ def test_group_resolution_uses_existing_chrome_market_transport(monkeypatch):
             encoding="utf-8", content=html.encode("utf-8"),
         )
 
-    monkeypatch.setattr(steam_session, "curl_requests", SimpleNamespace(get=curl_get))
+    monkeypatch.setattr(steam_session, "curl_requests", _curl_session_transport(curl_get))
     assert resolve_market_hash_name_from_listing_url(url, raise_on_error=True) == name
     assert len(sent) == 1
     assert sent[0][0] == url
@@ -416,7 +433,7 @@ def test_group_resolution_sends_login_cookie_through_chrome_transport(monkeypatc
             status_code=200, url=url, headers={}, encoding="utf-8", content=html.encode("utf-8"),
         )
 
-    monkeypatch.setattr(steam_session, "curl_requests", SimpleNamespace(get=curl_get))
+    monkeypatch.setattr(steam_session, "curl_requests", _curl_session_transport(curl_get))
     url = "https://steamcommunity.com/market/listings/730/G1802202E3004?category_Exterior=WearCategory2&category_Quality=strange"
     assert resolve_market_hash_name_from_listing_url(
         url, cookies="sessionid=test-session; steamLoginSecure=test-login", raise_on_error=True,

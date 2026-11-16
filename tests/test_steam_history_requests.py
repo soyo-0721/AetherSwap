@@ -6,6 +6,23 @@ import requests
 from steam import client
 
 
+def _curl_session_transport(curl_get):
+    """Adapt the older GET-only test stub to the Session-based transport."""
+    from types import SimpleNamespace
+
+    class FakeCurlSession:
+        def __init__(self, **_options):
+            self.cookies = SimpleNamespace(clear=lambda: None)
+
+        def request(self, method, url, **kwargs):
+            return curl_get(url, **kwargs)
+
+        def close(self):
+            pass
+
+    return SimpleNamespace(Session=FakeCurlSession)
+
+
 def response(status=200, body=None, headers=None):
     result = requests.Response()
     result.status_code = status
@@ -95,7 +112,7 @@ def test_history_sends_current_browser_headers_and_login_through_market_transpor
             encoding="utf-8", content=json.dumps({"success": True, "prices": prices}).encode(),
         )
 
-    monkeypatch.setattr(steam_session, "curl_requests", SimpleNamespace(get=curl_get))
+    monkeypatch.setattr(steam_session, "curl_requests", _curl_session_transport(curl_get))
     proxies = {"https": "http://proxy.example:8080/"}
     assert client.fetch_history(
         "Tec-9 | Red Quartz (Factory New)", cookies="sessionid=test; steamLoginSecure=test-login",

@@ -33,3 +33,16 @@ def test_listing_retains_retry_after_metadata():
     assert result["status_code"] == 429
     assert result["retry_after"] == "120"
     assert session.post.call_args.kwargs["data"]["assetid"] == "fake-asset"
+
+def test_listing_post_uses_origin_and_inventory_referer_without_xhr_marker():
+    session = Mock()
+    session.headers = {"Referer": "https://steamcommunity.com/profiles/test-account/inventory/"}
+    session.post.return_value = Mock(status_code=200, text='{"success": true}', headers={})
+
+    list_item(session, "test-session", 730, "2", "fake-asset", 100)
+
+    headers = session.post.call_args.kwargs["headers"]
+    assert headers["Origin"] == "https://steamcommunity.com"
+    assert headers["Referer"].endswith("/test-account/inventory/")
+    assert headers["X-Requested-With"] is None
+

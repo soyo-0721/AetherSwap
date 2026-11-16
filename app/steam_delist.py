@@ -220,7 +220,6 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         return False, None, "Cookie 中无 steamLoginSecure，请重新登录 Steam"
     sessionid = (c.get("sessionid") or "").strip()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://steamcommunity.com",
@@ -321,6 +320,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             "Origin": "https://steamcommunity.com",
             "Referer": "https://steamcommunity.com/market/",
             "X-Requested-With": "XMLHttpRequest",
+            "X-Prototype-Version": "1.7",
+            "Accept": "text/javascript, text/html, application/xml, text/xml, */*",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         }
         resp = session.post(remove_url, data={"sessionid": sessionid}, headers=post_headers, timeout=TIMEOUT)

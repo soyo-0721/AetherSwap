@@ -16,6 +16,23 @@ NAME = "Shadow Case"
 FRESH_COOKIES = f"sessionid=new-session; steamLoginSecure={STEAM_ID}%7C%7Cfresh"
 
 
+def _curl_session_transport(curl_get):
+    """Adapt the older GET-only test stub to the Session-based transport."""
+    from types import SimpleNamespace
+
+    class FakeCurlSession:
+        def __init__(self, **_options):
+            self.cookies = SimpleNamespace(clear=lambda: None)
+
+        def request(self, method, url, **kwargs):
+            return curl_get(url, **kwargs)
+
+        def close(self):
+            pass
+
+    return SimpleNamespace(Session=FakeCurlSession)
+
+
 @pytest.fixture
 def environment(monkeypatch):
     claims = base64.urlsafe_b64encode(json.dumps({"exp": 1}).encode()).decode().rstrip("=")
@@ -59,7 +76,7 @@ def environment(monkeypatch):
         return SimpleNamespace(status_code=200, url=url, headers={}, encoding="utf-8", content=body.encode())
 
     use_action = [False]
-    monkeypatch.setattr(steam_session, "curl_requests", SimpleNamespace(get=curl_get))
+    monkeypatch.setattr(steam_session, "curl_requests", _curl_session_transport(curl_get))
     return SimpleNamespace(credentials=credentials, account=account, login=login,
                            now=now, cooldown=cooldown, sent=sent, use_action=use_action)
 
