@@ -123,3 +123,36 @@ def test_delist_post_429_starts_shared_cooldown_without_retry(monkeypatch, isola
     assert session.closed
     assert isolated_cooldown.cooldown.remaining() == 75
     assert isolated_cooldown.cooldown._failures == 1
+
+
+def test_listing_429_blocks_followup_delist_without_opening_a_second_session(monkeypatch, isolated_cooldown):
+    response = _response(429, "120")
+    send = Mock(return_value=response)
+    monkeypatch.setattr(requests.Session, "request", send)
+
+    with create_steam_session() as session:
+        result = session.post(
+            "https://steamcommunity.com/market/sellitem/",
+            data={"assetid": "asset-1"},
+            proxies={},
+        )
+
+    assert result.status_code == 429
+    assert isolated_cooldown.cooldown.remaining() == 120
+    assert isolated_cooldown.cooldown._failures == 1
+
+    monkeypatch.setattr(
+        steam_delist,
+        "get_steam",
+        lambda: {"cookies": "steamLoginSecure=fake; sessionid=test", "steam_id": "76561198000000000"},
+    )
+    create_session = Mock()
+    monkeypatch.setattr(steam_delist, "create_market_session", create_session)
+
+    ok, assetid, error = steam_delist.delist_item("asset-1", "Test Item")
+
+    assert not ok
+    assert assetid is None
+    assert "冷却中" in error
+    assert isolated_cooldown.cooldown._failures == 1
+    create_session.assert_not_called()

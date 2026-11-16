@@ -38,6 +38,8 @@ def _get_mylistings_api(session) -> Optional[Dict[str, Dict[str, Any]]]:
     params = {"norender": "1", "start": "0", "count": "100"}
     try:
         r = session.get(MYLISTINGS_API_URL, params=params, verify=False, timeout=TIMEOUT)
+    except SteamMarketCooldownActive:
+        raise
     except Exception:
         return None
     if r.status_code != 200:
@@ -182,6 +184,8 @@ def _get_assetids_by_class_instance(
             if not last_assetid:
                 break
             jittered_sleep(0.5)
+    except SteamMarketCooldownActive:
+        raise
     except Exception:
         return None
     return result
