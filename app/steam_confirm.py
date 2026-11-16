@@ -4,7 +4,7 @@ import hmac
 import struct
 import time
 from typing import Dict, List, Tuple, Union
-import requests
+from steam.session import create_steam_session
 import urllib3
 import urllib.parse
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -26,8 +26,7 @@ class SteamConfirmer:
         self.identity_secret = raw_secret
         self.device_id = urllib.parse.unquote((device_id or "").strip())
         self.steam_id = str(steam_id or "").strip()
-        self.session = requests.Session()
-        self.session.verify = False
+        self.session = create_steam_session(verify=False)
         if isinstance(cookies, str):
             ck_dict = _cookies_to_dict(cookies)
         else:
@@ -105,10 +104,13 @@ class SteamConfirmer:
             return False, 0, str(e)
 def auto_confirm_once(identity_secret: str, device_id: str, steam_id: str, cookies: Union[str, dict]) -> Tuple[bool, int, str]:
     bot = SteamConfirmer(identity_secret, device_id, steam_id, cookies)
-    ok, confs, err = bot.get_confirmations()
-    if not ok:
-        return False, 0, f"获取列表失败: {err}"
-    ok2, n, err2 = bot.accept_all(confs)
-    if not ok2:
-        return False, 0, f"确认操作失败: {err2}"
-    return True, n, ""
+    try:
+        ok, confs, err = bot.get_confirmations()
+        if not ok:
+            return False, 0, f"获取列表失败: {err}"
+        ok2, n, err2 = bot.accept_all(confs)
+        if not ok2:
+            return False, 0, f"确认操作失败: {err2}"
+        return True, n, ""
+    finally:
+        bot.session.close()

@@ -160,3 +160,69 @@ def test_delist_does_not_send_any_request_during_an_existing_cooldown(
     assert ok is False
     assert "冷却中" in error
     send.assert_not_called()
+
+
+def test_friend_list_429_does_not_switch_proxy_and_retry(
+    monkeypatch, shared_cooldown
+):
+    from app import gift_engine
+
+    cooldown, _now = shared_cooldown
+    send = Mock(return_value=_response())
+    monkeypatch.setattr(
+        steam_session.requests.adapters.HTTPAdapter,
+        "send",
+        lambda _self, request, **kwargs: send(request, **kwargs),
+    )
+    proxy_calls = []
+    monkeypatch.setattr(
+        "utils.proxy_manager.get_proxy_manager",
+        lambda: type(
+            "Manager",
+            (),
+            {
+                "get_proxies_for_request": lambda self, failed=False: (
+                    proxy_calls.append(failed)
+                    or {"https": "http://proxy.example:8080"}
+                )
+            },
+        )(),
+    )
+
+    with pytest.raises(SteamMarketCooldownActive):
+        gift_engine.get_friend_list("steamLoginSecure=token", "76561198000000000")
+
+    assert proxy_calls == [False]
+    assert send.call_count == 1
+    assert cooldown.remaining() == 120
+
+
+def test_steam_guard_confirmation_uses_shared_cooldown(
+    monkeypatch, shared_cooldown
+):
+    from app.steam_confirm import SteamConfirmer
+
+    cooldown, _now = shared_cooldown
+    cooldown.defer("120")
+    send = Mock()
+    monkeypatch.setattr(
+        steam_session.requests.adapters.HTTPAdapter,
+        "send",
+        lambda *_args, **_kwargs: send(),
+    )
+
+    confirmer = SteamConfirmer(
+        "YWFh",
+        "device-id",
+        "76561198000000000",
+        "steamLoginSecure=token; sessionid=session",
+    )
+    try:
+        ok, confirmations, error = confirmer.get_confirmations()
+    finally:
+        confirmer.session.close()
+
+    assert ok is False
+    assert confirmations == []
+    assert "冷却中" in error
+    send.assert_not_called()

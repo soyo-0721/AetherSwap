@@ -29,29 +29,37 @@ def get_friend_list(cookies_raw: str, my_steamid: str) -> list:
     pm = get_proxy_manager()
     last_exc = None
     resp = None
-    for attempt in range(2):
-        try:
-            proxies = pm.get_proxies_for_request(failed=(attempt > 0))
-            _log(
-                f"[gift_engine] get_friend_list attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
-                "debug", category="proxy"
-            )
-            resp = requests.get(
-                url, params={"ajax": "1"}, cookies=cookies,
-                headers=_HEADERS, proxies=proxies, verify=False, timeout=15
-            )
-            resp.raise_for_status()
-            break
-        except Exception as e:
-            last_exc = e
-            _log(
-                f"[gift_engine] get_friend_list attempt={attempt} "
-                f"异常类型={type(e).__name__} 详情={e}",
-                "debug", category="proxy"
-            )
-            if attempt == 0:
-                continue
-            raise RuntimeError(f"拉取好友列表失败: {last_exc}") from last_exc
+    with create_steam_session(verify=False) as session:
+        session.cookies.update(cookies)
+        for attempt in range(2):
+            try:
+                proxies = pm.get_proxies_for_request(failed=(attempt > 0))
+                _log(
+                    f"[gift_engine] get_friend_list attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
+                    "debug", category="proxy"
+                )
+                resp = session.get(
+                    url, params={"ajax": "1"}, headers=_HEADERS,
+                    proxies=proxies, timeout=15
+                )
+                if resp.status_code == 429:
+                    raise SteamMarketCooldownActive(
+                        steam_market_cooldown.remaining() or 60.0
+                    )
+                resp.raise_for_status()
+                break
+            except SteamMarketCooldownActive:
+                raise
+            except Exception as e:
+                last_exc = e
+                _log(
+                    f"[gift_engine] get_friend_list attempt={attempt} "
+                    f"异常类型={type(e).__name__} 详情={e}",
+                    "debug", category="proxy"
+                )
+                if attempt == 0:
+                    continue
+                raise RuntimeError(f"拉取好友列表失败: {last_exc}") from last_exc
     if resp is None:
         raise RuntimeError(f"拉取好友列表失败: {last_exc}")
     soup = BeautifulSoup(resp.text, "html.parser")
