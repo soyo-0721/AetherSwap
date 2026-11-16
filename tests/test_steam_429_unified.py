@@ -226,3 +226,44 @@ def test_steam_guard_confirmation_uses_shared_cooldown(
     assert confirmations == []
     assert "冷却中" in error
     send.assert_not_called()
+
+
+def test_none_proxy_argument_still_uses_shared_proxy_policy(
+    monkeypatch, shared_cooldown
+):
+    manager = type(
+        "Manager",
+        (),
+        {
+            "get_proxies_for_request": lambda self: {"https": "http://proxy.example:8080"},
+            "should_always_use_proxy": lambda self: True,
+            "should_use_proxy_on_failure": lambda self: False,
+        },
+    )()
+    monkeypatch.setattr(
+        "utils.proxy_manager.get_proxy_manager",
+        lambda: manager,
+    )
+    sent = {}
+
+    response = _response(status_code=200, retry_after=None, body=b"{}")
+
+    def fake_send(_self, _request, **kwargs):
+        sent.update(kwargs)
+        return response
+
+    monkeypatch.setattr(
+        steam_session.requests.adapters.HTTPAdapter,
+        "send",
+        fake_send,
+    )
+
+    with steam_session.create_steam_session() as session:
+        result = session.get(
+            "https://steamcommunity.com/market/mylistings/",
+            proxies=None,
+            timeout=1,
+        )
+
+    assert result.status_code == 200
+    assert sent["proxies"] == {"https": "http://proxy.example:8080"}

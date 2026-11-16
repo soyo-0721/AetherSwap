@@ -5,6 +5,7 @@ import struct
 import time
 from typing import Dict, List, Tuple, Union
 from steam.session import create_steam_session
+from steam.request_policy import steam_market_cooldown
 import urllib3
 import urllib.parse
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -60,6 +61,11 @@ class SteamConfirmer:
         url = "https://steamcommunity.com/mobileconf/getlist"
         try:
             r = self.session.get(url, params=params, timeout=20)
+            if r.status_code == 429:
+                return False, [], (
+                    f"Steam HTTP 429 限流，冷却约 "
+                    f"{steam_market_cooldown.remaining():.0f} 秒"
+                )
             try:
                 data = r.json()
             except (ValueError, TypeError):
@@ -93,6 +99,11 @@ class SteamConfirmer:
         url = "https://steamcommunity.com/mobileconf/multiajaxop"
         try:
             r = self.session.post(url, params=params, files=multipart, timeout=25)
+            if r.status_code == 429:
+                return False, 0, (
+                    f"Steam HTTP 429 限流，冷却约 "
+                    f"{steam_market_cooldown.remaining():.0f} 秒"
+                )
             try:
                 data = r.json()
             except (ValueError, TypeError):

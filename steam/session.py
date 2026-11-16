@@ -84,9 +84,12 @@ class _SteamSession(requests.Session):
         self._allow_auth_during_cooldown = allow_auth_during_cooldown
 
     def _request_with_proxy(self, method, url, **kwargs):
-        # Market order-book callers already select proxies and own their retries.
-        if "proxies" in kwargs:
+        # A non-None proxy mapping means the caller has explicitly selected
+        # its route. None is equivalent to omitting the argument and must still
+        # use the shared proxy policy.
+        if kwargs.get("proxies") is not None:
             return super().request(method, url, **kwargs)
+        kwargs.pop("proxies", None)
 
         from utils.proxy_manager import get_proxy_manager
 
